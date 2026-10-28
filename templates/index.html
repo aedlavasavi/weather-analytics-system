@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weather Analytics</title>
+  <script src="{{ url_for('static', filename='chart.umd.js') }}"></script>
+  <style>
+    :root { --bg:#f5f7fa; --card:#fff; --ink:#1c2733; --muted:#5d6b7a; --accent:#1769aa; --line:#dde3ea; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--ink); }
+    header { background:var(--accent); color:#fff; padding:16px 20px; }
+    header h1 { margin:0; font-size:1.25rem; }
+    header p { margin:4px 0 0; font-size:.85rem; opacity:.9; }
+    main { max-width:1100px; margin:0 auto; padding:16px; }
+    form.search { display:flex; gap:8px; margin-bottom:16px; }
+    input[type=text] { flex:1; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:1rem; }
+    button { padding:10px 18px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-size:1rem; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:wait; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+    .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+    .kpi .label { font-size:.8rem; color:var(--muted); }
+    .kpi .value { font-size:1.6rem; font-weight:600; margin-top:4px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; margin-bottom:16px; }
+    .chartbox { position:relative; height:260px; }
+    h2 { font-size:1rem; margin:0 0 8px; }
+    #status { margin:0 0 12px; font-size:.9rem; color:var(--muted); min-height:1.2em; }
+    #status.err { color:#b3261e; }
+    ul.notes { margin:8px 0 0; padding-left:18px; color:var(--muted); font-size:.85rem; }
+    table.t { width:100%; border-collapse:collapse; font-size:.85rem; }
+    table.t th, table.t td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+    table.t th { color:var(--muted); font-weight:600; }
+    .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:.78rem; margin:0 6px 6px 0; background:#e6eef6; color:#12507e; }
+    .badge.warn { background:#fde8c8; color:#7a4300; font-weight:600; }
+    footer { text-align:center; color:var(--muted); font-size:.8rem; padding:16px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Cloud-Based Weather Data Analytics</h1>
+  <p>Data source: Open-Meteo. Forecasts are estimates and do not replace official weather warnings.</p>
+</header>
+<main>
+  <form class="search" id="searchForm">
+    <input type="text" id="city" placeholder="Enter a city, e.g. Hyderabad" value="Hyderabad" required>
+    <button type="submit" id="goBtn">Analyze</button>
+  </form>
+  <p id="status"></p>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="grid">
+    <div class="card"><h2>Daily temperature: observed and forecast</h2><div class="chartbox"><canvas id="tempChart"></canvas></div></div>
+    <div class="card"><h2>Daily rainfall</h2><div class="chartbox"><canvas id="rainChart"></canvas></div></div>
+    <div class="card"><h2>Humidity vs temperature (observed)</h2><div class="chartbox"><canvas id="scatterChart"></canvas></div></div>
+    <div class="card"><h2>Insights</h2><div id="insights" style="font-size:.9rem"></div></div>
+  </section>
+
+  <section class="card" style="margin-bottom:16px">
+    <h2>Big Data Analytics: batch pipeline on the cloud data lake</h2>
+    <p id="bdStatus" style="margin:0 0 8px;font-size:.9rem;color:var(--muted)">Loading...</p>
+    <div id="bdBadges"></div>
+    <div id="bdBody" hidden>
+      <div class="grid" style="margin-top:12px">
+        <div class="card" style="grid-column:1/-1"><h2>Monthly average temperature by city</h2><div class="chartbox" style="height:320px"><canvas id="bdMonthly"></canvas></div></div>
+        <div class="card"><h2>Total rainfall by city (whole period)</h2><div class="chartbox"><canvas id="bdRain"></canvas></div></div>
+        <div class="card"><h2>Forecast model error on held-out 60 days (lower is better)</h2><div class="chartbox"><canvas id="bdModels"></canvas></div></div>
+        <div class="card"><h2>Next-day temperature estimates</h2><div id="bdForecast"></div></div>
+        <div class="card"><h2>Unusual temperature days</h2><div id="bdAnom"></div></div>
+        <div class="card"><h2>Data quality (cleaning stage)</h2><div id="bdQuality"></div></div>
+      </div>
+      <ul class="notes" id="bdNotes"></ul>
+    </div>
+  </section>
+</main>
+<footer>Student project demo. For severe weather, follow your national meteorological department and local emergency authorities.</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const charts = {};
+let currentCity = "";
+
+function setStatus(text, isError) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = isError ? "err" : "";
+}
+
+async function getJSON(url) {
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ("Request failed (" + res.status + ")"));
+  return data;
+}
+
+function fmt(v, unit) { return (v === null || v === undefined) ? "n/a" : v + unit; }
+
+function renderKpis(cur) {
+  const items = [
+    ["Temperature", fmt(cur.temperature_c, " °C")],
+    ["Feels like", fmt(cur.feels_like_c, " °C")],
+    ["Humidity", fmt(cur.humidity_pct, " %")],
+    ["Wind", fmt(cur.wind_kmh, " km/h")],
+    ["Pressure", fmt(cur.pressure_hpa, " hPa")],
+    ["Condition", cur.condition || "n/a"],
+  ];
+  const box = $("kpis");
+  box.replaceChildren();
+  for (const [label, value] of items) {
+    const d = document.createElement("div"); d.className = "card kpi";
+    const l = document.createElement("div"); l.className = "label"; l.textContent = label;
+    const v = document.createElement("div"); v.className = "value"; v.textContent = value;
+    d.append(l, v); box.append(d);
+  }
+}
+
+function drawChart(id, config) {
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart($(id), config);
+}
+
+function axis(title) { return { title: { display: true, text: title } }; }
+
+function renderCharts(report) {
+  if (typeof Chart === "undefined") {
+    setStatus("Charts could not load (Chart.js CDN blocked?). Data is still shown below.", true);
+    return;
+  }
+  const obs = report.daily_observed, fc = report.daily_forecast;
+  const labels = obs.map(d => d.date).concat(fc.map(d => d.date));
+  const obsT = obs.map(d => d.temp_mean).concat(fc.map(() => null));
+  const fcT = obs.map(() => null).concat(fc.map(d => d.temp_mean));
+  // join the lines visually at the boundary
+  if (obs.length && fc.length) fcT[obs.length - 1] = obs[obs.length - 1].temp_mean;
+  drawChart("tempChart", {
+    type: "line",
+    data: { labels, datasets: [
+      { label: "Observed mean temp (°C)", data: obsT, borderColor: "#1769aa", tension: .25, pointRadius: 1 },
+      { label: "Forecast mean temp (°C)", data: fcT, borderColor: "#e07b00", borderDash: [6, 4], tension: .25, pointRadius: 1 },
+    ]},
+    options: { maintainAspectRatio: false, scales: { x: axis("Date"), y: axis("Temperature (°C)") } },
+  });
+
+  const rainObs = obs.map(d => d.precip_total).concat(fc.map(() => null));
+  const rainFc = obs.map(() => null).concat(fc.map(d => d.precip_total));
+  drawChart("rainChart", {
+    type: "bar",
+    data: { labels, datasets: [
+      { label: "Observed rainfall (mm)", data: rainObs, backgroundColor: "#1769aa" },
+      { label: "Forecast rainfall (mm)", data: rainFc, backgroundColor: "#e07b00" },
+    ]},
+    options: { maintainAspectRatio: false, scales: { x: axis("Date"), y: Object.assign(axis("Rainfall (mm)"), { beginAtZero: true }) } },
+  });
+
+  drawChart("scatterChart", {
+    type: "scatter",
+    data: { datasets: [{ label: "Hourly observations", data: report.scatter.map(p => ({ x: p.temp_c, y: p.humidity_pct })), backgroundColor: "rgba(23,105,170,.5)" }] },
+    options: { maintainAspectRatio: false, scales: { x: axis("Temperature (°C)"), y: axis("Relative humidity (%)") } },
+  });
+}
+
+function renderInsights(report) {
+  const box = $("insights");
+  box.replaceChildren();
+  const add = (text) => { const p = document.createElement("p"); p.style.margin = "0 0 8px"; p.textContent = text; box.append(p); };
+  const t = report.stats.temperature_c;
+  if (t) add("Observed temperature over " + report.quality.observed_hours + " hours: mean " + t.mean + " °C, range " + t.min + " to " + t.max + " °C.");
+  if (report.stats.rainfall_mm) add("Observed rainfall total: " + report.stats.rainfall_mm.total + " mm across " + report.stats.rainfall_mm.rainy_days + " rainy day(s).");
+  if (report.temperature_trend_c_per_day !== null) add("Temperature trend: " + report.temperature_trend_c_per_day + " °C per day (linear fit, interpretation only).");
+  const an = report.anomalies.temperature.concat(report.anomalies.rainfall);
+  add(an.length ? "Unusual days flagged (|z| > 2): " + an.map(a => a.date).join(", ") : "No unusual days flagged by the z-score check.");
+  const b = report.baseline_forecast;
+  if (b) add("Baseline " + b.method + ": hold-out MAE " + b.holdout_mae_c + " °C. This is a simple illustration, not an official forecast.");
+  const ul = document.createElement("ul"); ul.className = "notes";
+  report.notes.forEach(n => { const li = document.createElement("li"); li.textContent = n; ul.append(li); });
+  box.append(ul);
+  add("Source: " + report.source + ". Observed until " + report.observed_until + " (" + report.timezone + ").");
+}
+
+$("searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const city = $("city").value.trim();
+  if (!city) return;
+  $("goBtn").disabled = true;
+  setStatus("Loading weather data for " + city + "...");
+  try {
+    const [w, a] = await Promise.all([
+      getJSON("/api/weather?city=" + encodeURIComponent(city)),
+      getJSON("/api/analytics?city=" + encodeURIComponent(city)),
+    ]);
+    currentCity = city;
+    const loc = w.location;
+    setStatus("Showing " + [loc.name, loc.admin1, loc.country].filter(Boolean).join(", ") + " | latest reading " + w.current.time + " (" + w.current.timezone + ")");
+    renderKpis(w.current);
+    renderCharts(a.report);
+    renderInsights(a.report);
+  } catch (err) {
+    setStatus(err.message, true);
+  } finally {
+    $("goBtn").disabled = false;
+  }
+});
+
+// ---------- Big data (Spark) section ----------
+const PALETTE = ["#1769aa","#e07b00","#2a9d58","#b3261e","#7b4fb8","#0097a7","#8d6e63","#c2185b","#5c6bc0","#689f38"];
+
+function makeTable(host, headers, rows) {
+  host.replaceChildren();
+  const t = document.createElement("table"); t.className = "t";
+  const hr = document.createElement("tr");
+  headers.forEach(h => { const th = document.createElement("th"); th.textContent = h; hr.append(th); });
+  t.append(hr);
+  rows.forEach(r => {
+    const tr = document.createElement("tr");
+    r.forEach(v => { const td = document.createElement("td"); td.textContent = (v === null || v === undefined) ? "n/a" : v; tr.append(td); });
+    t.append(tr);
+  });
+  host.append(t);
+}
+
+function badge(text, warn) {
+  const s = document.createElement("span"); s.className = "badge" + (warn ? " warn" : ""); s.textContent = text; return s;
+}
+
+function renderBigData(s) {
+  const run = s.run, st = s.storage || {};
+  const badges = $("bdBadges"); badges.replaceChildren();
+  if (run.data_mode === "synthetic") badges.append(badge("SYNTHETIC DEMO DATA, not real observations", true));
+  else badges.append(badge("Real data: " + run.data_source));
+  badges.append(badge(run.engine));
+  badges.append(badge(run.clean_rows.toLocaleString() + " clean hourly rows"));
+  badges.append(badge(run.cities.length + " cities"));
+  badges.append(badge(run.data_start + " to " + run.data_end));
+  badges.append(badge("job took " + run.duration_seconds + " s"));
+  let storageDesc = "local data lake";
+  if (st.backend === "s3") storageDesc = "S3 bucket " + st.bucket + " (" + st.endpoint + ")";
+  else if (st.backend === "supabase") storageDesc = "Supabase bucket " + st.bucket + " (" + st.endpoint + ")";
+  badges.append(badge("storage: " + storageDesc));
+  $("bdStatus").textContent = "Last pipeline run finished " + run.finished_at + " (UTC).";
+  $("bdBody").hidden = false;
+  if (typeof Chart === "undefined") return;
+
+  // monthly temperature lines, one per city
+  const keys = [...new Set(s.monthly.map(m => m.year + "-" + String(m.month).padStart(2, "0")))].sort();
+  const datasets = run.cities.map((city, i) => {
+    const byKey = {}; s.monthly.filter(m => m.city === city).forEach(m => { byKey[m.year + "-" + String(m.month).padStart(2, "0")] = m.avg_temp; });
+    return { label: city, data: keys.map(k => byKey[k] ?? null), borderColor: PALETTE[i % PALETTE.length], tension: .25, pointRadius: 0, borderWidth: 2 };
+  });
+  drawChart("bdMonthly", { type: "line", data: { labels: keys, datasets },
+    options: { maintainAspectRatio: false,
+      plugins: { legend: { position: "right", labels: { boxWidth: 12, font: { size: 11 } } } },
+      scales: { x: axis("Month"), y: axis("Average temperature (°C)") } } });
+
+  const cs = s.city_stats.slice().sort((a, b) => b.total_rain_mm - a.total_rain_mm);
+  drawChart("bdRain", { type: "bar",
+    data: { labels: cs.map(c => c.city), datasets: [{ label: "Total rainfall (mm)", data: cs.map(c => c.total_rain_mm), backgroundColor: "#1769aa" }] },
+    options: { maintainAspectRatio: false, scales: { x: axis("City"), y: Object.assign(axis("Rainfall (mm)"), { beginAtZero: true }) } } });
+
+  const ml = s.ml;
+  if (ml && ml.status === "ok") {
+    const names = [["persistence_baseline", "Same as yesterday"], ["linear_regression", "Linear regression"], ["random_forest", "Random forest"]].filter(n => ml.metrics[n[0]]);
+    drawChart("bdModels", { type: "bar",
+      data: { labels: names.map(n => n[1]), datasets: [{ label: "RMSE (°C)", data: names.map(n => ml.metrics[n[0]].rmse), backgroundColor: names.map(n => ({ persistence_baseline: "#9aa5b1", linear_regression: "#1769aa", random_forest: "#2a9d58" })[n[0]]) }] },
+      options: { maintainAspectRatio: false, scales: { x: axis("Forecast model"), y: Object.assign(axis("RMSE (°C)"), { beginAtZero: true }) } } });
+    makeTable($("bdForecast"), ["City", "As of", "Last mean °C", "Next-day est. °C"],
+      ml.next_day_estimates.map(e => [e.city, e.as_of_date, e.last_mean_temp_c, e.predicted_next_day_mean_temp_c]));
+  } else {
+    $("bdForecast").textContent = "Model skipped: " + ((ml && ml.reason) || "no data");
+  }
+  makeTable($("bdAnom"), ["City", "Date", "Mean °C", "Normal °C", "z"],
+    s.anomalies.slice(0, 10).map(a => [a.city, a.date, a.temp_mean, a.clim_mean, a.z]));
+  const q = s.quality;
+  makeTable($("bdQuality"), ["Check", "Rows"], [
+    ["Raw rows read", q.raw_rows.toLocaleString()],
+    ["Duplicates removed", q.duplicates_removed],
+    ["Out-of-range values set to null", Object.values(q.out_of_range_set_to_null).reduce((a, b) => a + b, 0)],
+    ["Rows dropped (no temperature)", q.rows_dropped_no_temperature],
+    ["Clean rows kept", q.clean_rows.toLocaleString()],
+  ]);
+  const notes = $("bdNotes"); notes.replaceChildren();
+  s.notes.concat([s.anomaly_rule ? "Unusual day rule: " + s.anomaly_rule : ""]).filter(Boolean)
+    .forEach(n => { const li = document.createElement("li"); li.textContent = n; notes.append(li); });
+}
+
+(async function loadBigData() {
+  try {
+    const res = await fetch("/api/bigdata/summary");
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { $("bdStatus").textContent = (data.error || "Not available") + (data.hint ? "  " + data.hint : ""); return; }
+    renderBigData(data);
+  } catch (err) {
+    $("bdStatus").textContent = "Could not load big data results: " + err.message;
+  }
+})();
+
+$("searchForm").requestSubmit();
+</script>
+</body>
+</html>

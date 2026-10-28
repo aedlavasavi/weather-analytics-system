@@ -1,0 +1,52 @@
+# Local "mini cloud": web app + S3-compatible object storage (MinIO) + on-demand Spark pipeline.
+#
+#   docker compose up --build -d                    # start MinIO + web app
+#   docker compose --profile pipeline run --rm pipeline   # run the Spark pipeline once
+#   open http://localhost:5000   (dashboard)   http://localhost:9001   (MinIO console)
+#
+# The credentials below are for LOCAL DEMO ONLY. Never reuse them anywhere real.
+
+x-storage-env: &storage-env
+  STORAGE_BACKEND: s3
+  S3_BUCKET: weather-data-lake
+  S3_ENDPOINT_URL: http://minio:9000
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: minioadmin
+  AWS_SECRET_ACCESS_KEY: minioadmin123
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  web:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      <<: *storage-env
+    depends_on:
+      - minio
+    volumes:
+      - web-data:/data
+
+  pipeline:
+    build: .
+    profiles: ["pipeline"]
+    command: ["python", "-m", "bigdata.run_pipeline", "--engine", "${PIPELINE_ENGINE:-spark}", "--mode", "${PIPELINE_MODE:-synthetic}", "--years", "${PIPELINE_YEARS:-2}", "--publish"]
+    environment:
+      <<: *storage-env
+    depends_on:
+      - minio
+
+volumes:
+  minio-data:
+  web-data:

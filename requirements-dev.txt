@@ -1,0 +1,4 @@
+# For running the test suite: python -m unittest -v
+# (Spark tests are skipped automatically if pyspark is not installed)
+-r requirements.txt
+moto[s3]>=5.0

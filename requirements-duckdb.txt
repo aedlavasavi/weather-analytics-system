@@ -1,0 +1,3 @@
+# Optional DuckDB SQL engine:  pip install -r requirements-duckdb.txt
+-r requirements.txt
+duckdb>=1.2

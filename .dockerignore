@@ -1,0 +1,8 @@
+.env
+venv/
+.venv/
+__pycache__/
+datalake/
+weather.db
+*.zip
+.git/

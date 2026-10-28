@@ -1,0 +1,39 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Test and cache files
+.pytest_cache/
+.mypy_cache/
+
+# Generated data
+datalake/
+*.log
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+
+# Local database
+weather.db
+*.db
+
+# Generated files
+datalake/
+*.log
+
+# Python cache
+__pycache__/
+.pytest_cache/

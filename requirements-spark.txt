@@ -1,0 +1,2 @@
+# Spark is now part of requirements.txt; this file is kept so old commands still work.
+-r requirements.txt
